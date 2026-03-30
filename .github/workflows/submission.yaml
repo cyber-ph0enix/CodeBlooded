@@ -1,0 +1,68 @@
+name: Submission
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  evaluate-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Files & Security Constraints
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          FILES_JSON=$(gh api repos/$REPO/pulls/$PR_NUMBER/files)
+          FILE_COUNT=$(echo "$FILES_JSON" | jq length)
+
+          if [ "$FILE_COUNT" -ne 1 ]; then
+            gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** You modified $FILE_COUNT files. A submission must consist of exactly ONE file."
+            gh pr close $PR_NUMBER --repo $REPO
+            exit 1
+          fi
+
+          FILENAME=$(echo "$FILES_JSON" | jq -r '.[0].filename')
+          STATUS=$(echo "$FILES_JSON" | jq -r '.[0].status')
+
+          if [[ ! "$FILENAME" =~ ^submissions/CPX-[A-Za-z0-9_-]+\.md$ ]]; then
+            gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** Invalid location or format. Your file must be placed inside the \`submissions/\` directory and named with your Team ID (e.g., \`submissions/CPX-042.md\`)."
+            gh pr close $PR_NUMBER --repo $REPO
+            exit 1
+          fi
+
+          if [ "$STATUS" == "removed" ]; then
+            gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** Deletion of submission files is strictly prohibited."
+            gh pr close $PR_NUMBER --repo $REPO
+            exit 1
+          fi
+
+          if [ "$STATUS" == "modified" ]; then
+            ORIGINAL_AUTHOR=$(gh api "repos/$REPO/commits?path=$FILENAME&per_page=100" --jq '.[-1].author.login')
+
+            if [ "$PR_AUTHOR" != "$ORIGINAL_AUTHOR" ]; then
+              gh pr comment $PR_NUMBER --repo $REPO --body "**❌ ALERT: Tampering Detected.** You (@$PR_AUTHOR) are attempting to modify a file owned by @$ORIGINAL_AUTHOR. This action has been blocked."
+              gh pr close $PR_NUMBER --repo $REPO
+              exit 1
+            fi
+          fi
+
+      - name: Auto Merge Submission
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr review $PR_NUMBER --repo $REPO --approve --body "✅ **Accepted.** Submission verified."
+          gh pr merge $PR_NUMBER --repo $REPO --squash --delete-branch
