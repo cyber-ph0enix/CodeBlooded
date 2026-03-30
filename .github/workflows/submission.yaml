@@ -1,7 +1,7 @@
 name: Submission
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -35,20 +35,26 @@ jobs:
           FILENAME=$(echo "$FILES_JSON" | jq -r '.[0].filename')
           STATUS=$(echo "$FILES_JSON" | jq -r '.[0].status')
 
-          if [[ ! "$FILENAME" =~ ^submissions/CPX-[A-Za-z0-9_-]+\.md$ ]]; then
+          if [[ ! "$FILENAME" =~ ^submissions/CPX-[0-9]{3}\.md$ ]]; then
             gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** Invalid location or format. Your file must be placed inside the \`submissions/\` directory and named with your Team ID (e.g., \`submissions/CPX-042.md\`)."
             gh pr close $PR_NUMBER --repo $REPO
             exit 1
           fi
 
-          if [ "$STATUS" == "removed" ]; then
-            gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** Deletion of submission files is strictly prohibited."
+          if [[ "$STATUS" != "added" && "$STATUS" != "modified" ]]; then
+            gh pr comment $PR_NUMBER --repo $REPO --body "**❌ Rejected:** Invalid operation ($STATUS). You may only add a new submission or modify an existing one. Deletions and renames are blocked."
             gh pr close $PR_NUMBER --repo $REPO
             exit 1
           fi
 
           if [ "$STATUS" == "modified" ]; then
             ORIGINAL_AUTHOR=$(gh api "repos/$REPO/commits?path=$FILENAME&per_page=100" --jq '.[-1].author.login')
+
+            if [ "$ORIGINAL_AUTHOR" == "null" ] || [ -z "$ORIGINAL_AUTHOR" ]; then
+              gh pr comment $PR_NUMBER --repo $REPO --body "**⚠️ Identity Error:** We cannot verify the original creator of this file because their Git email is not linked to a GitHub account. To update this file, please edit it directly via the GitHub Web UI."
+              gh pr close $PR_NUMBER --repo $REPO
+              exit 1
+            fi
 
             if [ "$PR_AUTHOR" != "$ORIGINAL_AUTHOR" ]; then
               gh pr comment $PR_NUMBER --repo $REPO --body "**❌ ALERT: Tampering Detected.** You (@$PR_AUTHOR) are attempting to modify a file owned by @$ORIGINAL_AUTHOR. This action has been blocked."
